@@ -13,17 +13,21 @@ The proxy is designed to run on the same machine as the user and consume local a
 3. Supply-chain compromise through dependencies
 4. Hidden or unexpected outbound network traffic
 5. Fake-success behavior that hides real upstream/auth failures
+6. Protocol drift between documented API surfaces and actual behavior
+7. Local planning artifacts accidentally committed as if they were product documentation
 
 ## Non-goals for current phase
 - multi-tenant deployment
 - public internet deployment
 - centralized auth distribution
 - production SaaS hosting model
+- full Anthropic protocol parity
 
-## Mitigations in progress
+## Mitigations currently present
 - localhost bind
 - auth validation
 - honest error responses
 - removal of fake response paths
 - transport/header minimization
 - reproducible build path
+- explicit OpenAI/Anthropic baseline documentation
