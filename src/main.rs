@@ -465,46 +465,7 @@ async fn main() -> Result<()> {
         }
     );
 
-    // Health check endpoint (removed unused variable warning)
-    let _health = warp::path("health")
-        .and(warp::get())
-        .map(|| {
-            println!("💚 Health check requested");
-            warp::reply::json(&json!({
-                "status": "ok",
-                "service": "codex-openai-proxy"
-            }))
-        });
-
-    // Multiple endpoints for CLINE compatibility
     let proxy_filter = warp::any().map(move || proxy.clone());
-    
-    let _chat_completions_v1 = warp::path!("v1" / "chat" / "completions")
-        .and(warp::post())
-        .and(warp::header::headers_cloned())
-        .and(warp::body::json())
-        .and(proxy_filter.clone())
-        .and_then(handle_chat_completions);
-        
-    let _chat_completions_direct = warp::path("chat")
-        .and(warp::path("completions"))
-        .and(warp::path::end())
-        .and(warp::post())
-        .and(warp::header::headers_cloned())
-        .and(warp::body::json())
-        .and(proxy_filter.clone())
-        .and_then(handle_chat_completions);
-
-    // Models endpoints
-    let _models_v1 = warp::path!("v1" / "models")
-        .and(warp::get())
-        .and(warp::header::headers_cloned())
-        .and_then(handle_models);
-        
-    let _models_direct = warp::path("models")
-        .and(warp::get())
-        .and(warp::header::headers_cloned())
-        .and_then(handle_models);
 
     // CORS headers - allow all headers to fix CLINE issues
     let cors = warp::cors()
@@ -525,16 +486,13 @@ async fn main() -> Result<()> {
         .with(cors)
         .with(warp::log("codex_proxy"));
 
-    println!("🚀 Codex OpenAI Proxy listening on http://0.0.0.0:{}", args.port);
-    println!("   Health check: http://localhost:{}/health", args.port);
-    println!("   Chat endpoint: http://localhost:{}/v1/chat/completions", args.port);
-    println!("\n   Configure CLINE with:");
-    println!("   Base URL: http://localhost:{}", args.port);
-    println!("   Model: gpt-5");
-    println!("   API Key: (any value)");
+    println!("🚀 Codex OpenAI Proxy listening on http://127.0.0.1:{}", args.port);
+    println!("   Health check: http://127.0.0.1:{}/health", args.port);
+    println!("   Chat endpoint: http://127.0.0.1:{}/v1/chat/completions", args.port);
+    println!("   Binding mode: localhost-only");
 
     warp::serve(routes)
-        .run(([0, 0, 0, 0], args.port))
+        .run(([127, 0, 0, 1], args.port))
         .await;
 
     Ok(())
@@ -584,134 +542,52 @@ async fn universal_request_handler(
             
             Ok(warp::reply::json(&models_response).into_response())
         },
-        ("POST", "/chat/completions") | ("POST", "/v1/chat/completions") => {
-            println!("🔥 === MATCHED CHAT COMPLETIONS ===");
-            
-            // LOG EXACT CLINE REQUEST FOR CURL REPLICATION
-            println!("\n📋 === CLINE REQUEST DETAILS FOR CURL ===");
-            println!("Method: POST");
-            println!("Path: {}", path_str);
-            println!("Body size: {} bytes", body.len());
-            
-            // Log all headers in curl format
-            println!("\nHeaders for curl:");
-            for (name, value) in headers.iter() {
-                if let Ok(value_str) = value.to_str() {
-                    if name.as_str().to_lowercase() == "authorization" {
-                        println!("  -H \"{}: {}***\"", name, &value_str[..std::cmp::min(20, value_str.len())]);
-                    } else if name.as_str().to_lowercase().starts_with("x-forwarded") {
-                        println!("  # Skip: -H \"{}: {}\"", name, value_str);
-                    } else {
-                        println!("  -H \"{}: {}\"", name, value_str);
-                    }
-                }
-            }
-            
-            // Log body (truncated for readability)
-            println!("\nBody (first 1000 chars):");
-            if let Ok(body_str) = std::str::from_utf8(&body) {
-                let truncated = if body_str.len() > 1000 {
-                    format!("{}... [TRUNCATED]", &body_str[..1000])
-                } else {
-                    body_str.to_string()
-                };
-                println!("{}", truncated);
-                
-                // Generate curl command
-                println!("\n🚀 CURL COMMAND TO REPLICATE:");
-                println!("curl -X POST http://localhost:8888{} \\", path_str);
-                for (name, value) in headers.iter() {
-                    if let Ok(value_str) = value.to_str() {
-                        if !name.as_str().to_lowercase().starts_with("x-forwarded") 
-                           && name.as_str().to_lowercase() != "host" {
-                            if name.as_str().to_lowercase() == "authorization" {
-                                println!("  -H \"{}: test-key\" \\", name);
-                            } else {
-                                println!("  -H \"{}: {}\" \\", name, value_str);
-                            }
-                        }
-                    }
-                }
-                println!("  -d '{}'", body_str.chars().take(500).collect::<String>());
-            }
-            println!("📋 === END CLINE REQUEST DETAILS ===\n");
-            
-            // Parse JSON from bytes
+        ("POST", "/v1/chat/completions") => {
             let chat_req: ChatCompletionsRequest = match serde_json::from_slice(&body) {
                 Ok(req) => req,
-                Err(e) => {
-                    println!("❌ JSON parse error: {}", e);
+                Err(_) => {
                     return Ok(warp::reply::with_status(
                         "Invalid JSON",
-                        warp::http::StatusCode::BAD_REQUEST
-                    ).into_response());
+                        warp::http::StatusCode::BAD_REQUEST,
+                    )
+                    .into_response());
                 }
             };
-            
-            println!("   Model: {}", chat_req.model);
-            println!("   Messages: {} items", chat_req.messages.len());
-            for (i, msg) in chat_req.messages.iter().enumerate() {
-                let content_preview = match &msg.content {
-                    Value::String(s) => s.chars().take(50).collect::<String>(),
-                    Value::Array(arr) => format!("[array with {} items]", arr.len()),
-                    _ => format!("[{}]", msg.content.to_string().chars().take(50).collect::<String>()),
-                };
-                println!("   [{}] {}: {}", i, msg.role, content_preview);
-            }
-            println!("🔥 === END MATCHED ===\n");
-            
-            // Check if streaming is requested
+
             if chat_req.stream.unwrap_or(false) {
-                println!("🔄 STREAMING: CLINE requested streaming response, implementing SSE format");
-                
-                // Generate contextual response based on user messages
-                let message = improved_response::generate_contextual_response(&chat_req.messages);
-                println!("📝 Generated contextual response: {}", &message[..std::cmp::min(100, message.len())]);
-                
-                let chunk_id = "chatcmpl-streaming-12345";
-                let model = chat_req.model.clone();
-                
-                let sse_chunks = vec![
-                    // First chunk with role
-                    format!("data: {{\"id\":\"{}\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\"}},\"finish_reason\":null}}]}}\n\n", 
-                            chunk_id, chrono::Utc::now().timestamp(), model),
-                    // Content chunk
-                    format!("data: {{\"id\":\"{}\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{}\"}},\"finish_reason\":null}}]}}\n\n", 
-                            chunk_id, chrono::Utc::now().timestamp(), model, message),
-                    // Final chunk
-                    format!("data: {{\"id\":\"{}\",\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n", 
-                            chunk_id, chrono::Utc::now().timestamp(), model),
-                    // End marker
-                    "data: [DONE]\n\n".to_string(),
-                ];
-                
-                let sse_response = sse_chunks.join("");
-                let reply = warp::reply::with_header(sse_response, "content-type", "text/event-stream");
-                let reply = warp::reply::with_header(reply, "cache-control", "no-cache");
-                let reply = warp::reply::with_header(reply, "connection", "keep-alive");
-                let reply = warp::reply::with_header(reply, "access-control-allow-origin", "*");
-                Ok(reply.into_response())
-            } else {
-                match proxy.proxy_request(chat_req).await {
-                    Ok(response) => {
-                        let reply = warp::reply::json(&response);
-                        let reply = warp::reply::with_header(reply, "content-type", "application/json");
-                        let reply = warp::reply::with_header(reply, "access-control-allow-origin", "*");
-                        Ok(reply.into_response())
-                    },
-                    Err(e) => {
-                        eprintln!("Proxy error: {:#}", e);
-                        let reply = warp::reply::json(&json!({
-                            "error": {
-                                "message": format!("Proxy error: {}", e),
-                                "type": "proxy_error",
-                                "code": "internal_error"
-                            }
-                        }));
-                        let reply = warp::reply::with_header(reply, "content-type", "application/json");
-                        let reply = warp::reply::with_header(reply, "access-control-allow-origin", "*");
-                        Ok(reply.into_response())
+                let reply = warp::reply::json(&json!({
+                    "error": {
+                        "message": "Streaming is not supported yet in the hardened path",
+                        "type": "unsupported_feature",
+                        "code": "streaming_not_supported"
                     }
+                }));
+                return Ok(warp::reply::with_status(
+                    reply,
+                    warp::http::StatusCode::NOT_IMPLEMENTED,
+                )
+                .into_response());
+            }
+
+            match proxy.proxy_request(chat_req).await {
+                Ok(response) => {
+                    let reply = warp::reply::json(&response);
+                    let reply = warp::reply::with_header(reply, "content-type", "application/json");
+                    let reply = warp::reply::with_header(reply, "access-control-allow-origin", "*");
+                    Ok(reply.into_response())
+                }
+                Err(e) => {
+                    eprintln!("Proxy error: {:#}", e);
+                    let reply = warp::reply::json(&json!({
+                        "error": {
+                            "message": format!("Proxy error: {}", e),
+                            "type": "proxy_error",
+                            "code": "internal_error"
+                        }
+                    }));
+                    let reply = warp::reply::with_header(reply, "content-type", "application/json");
+                    let reply = warp::reply::with_header(reply, "access-control-allow-origin", "*");
+                    Ok(reply.into_response())
                 }
             }
         },
@@ -721,64 +597,6 @@ async fn universal_request_handler(
                 "Not found",
                 warp::http::StatusCode::NOT_FOUND
             ).into_response())
-        }
-    }
-}
-
-async fn handle_models(
-    headers: warp::http::HeaderMap,
-) -> Result<impl warp::Reply, warp::Rejection> {
-    log_request(&warp::http::Method::GET, "/models", &headers);
-    
-    println!("📋 === MATCHED MODELS REQUEST ===");
-    println!("📋 === END MATCHED ===\n");
-    
-    // Return a simple models list for CLINE
-    let models_response = json!({
-        "object": "list",
-        "data": [
-            {
-                "id": "gpt-4",
-                "object": "model",
-                "created": 1687882411,
-                "owned_by": "openai"
-            },
-            {
-                "id": "gpt-5",
-                "object": "model", 
-                "created": 1687882411,
-                "owned_by": "openai"
-            }
-        ]
-    });
-    
-    Ok(warp::reply::json(&models_response))
-}
-
-async fn handle_chat_completions(
-    headers: warp::http::HeaderMap,
-    req: ChatCompletionsRequest,
-    proxy: ProxyServer,
-) -> Result<impl warp::Reply, warp::Rejection> {
-    // Enhanced logging for successful matches
-    log_request(&warp::http::Method::POST, "/chat/completions", &headers);
-    
-    println!("🔥 === MATCHED CHAT COMPLETIONS ===");
-    println!("   Model: {}", req.model);
-    println!("   Messages: {} items", req.messages.len());
-    println!("🔥 === END MATCHED ===\n");
-    
-    match proxy.proxy_request(req).await {
-        Ok(response) => Ok(warp::reply::json(&response)),
-        Err(e) => {
-            eprintln!("Proxy error: {:#}", e);
-            Ok(warp::reply::json(&json!({
-                "error": {
-                    "message": format!("Proxy error: {}", e),
-                    "type": "proxy_error",
-                    "code": "internal_error"
-                }
-            })))
         }
     }
 }
