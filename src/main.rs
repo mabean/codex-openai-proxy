@@ -221,35 +221,6 @@ impl ProxyServer {
 
 
     async fn proxy_request(&self, chat_req: ChatCompletionsRequest) -> Result<ChatCompletionsResponse> {
-        // For now, return a working response while we implement backend
-        println!("🔄 Processing CLINE request...");
-        println!("🔍 Stream setting: {:?}", chat_req.stream);
-        
-        let chat_res = ChatCompletionsResponse {
-            id: format!("chatcmpl-{}", Uuid::new_v4()),
-            object: "chat.completion".to_string(),
-            created: chrono::Utc::now().timestamp(),
-            model: chat_req.model.clone(),
-            choices: vec![Choice {
-                index: 0,
-                message: ChatResponseMessage {
-                    role: "assistant".to_string(),
-                    content: "I can help you with coding tasks! The proxy connection is working well. What would you like assistance with? (Note: Currently running in development mode while ChatGPT backend integration is being finalized.)".to_string(),
-                },
-                finish_reason: Some("stop".to_string()),
-            }],
-            usage: Some(Usage {
-                prompt_tokens: 50,
-                completion_tokens: 30,
-                total_tokens: 80,
-            }),
-        };
-        
-        Ok(chat_res)
-    }
-    
-    #[allow(dead_code)]
-    async fn proxy_request_original(&self, chat_req: ChatCompletionsRequest) -> Result<ChatCompletionsResponse> {
         // Convert to Responses API format
         let responses_req = self.convert_chat_to_responses(chat_req);
         
@@ -294,30 +265,11 @@ impl ProxyServer {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             
-            // Instead of returning error, create a valid response with error message
-            let error_message = "Hello! I'm responding from the proxy. The backend API isn't working yet but I can receive and respond to your requests.".to_string();
-            
-            let chat_res = ChatCompletionsResponse {
-                id: format!("chatcmpl-{}", Uuid::new_v4()),
-                object: "chat.completion".to_string(),
-                created: chrono::Utc::now().timestamp(),
-                model: responses_req.model.clone(),
-                choices: vec![Choice {
-                    index: 0,
-                    message: ChatResponseMessage {
-                        role: "assistant".to_string(),
-                        content: error_message,
-                    },
-                    finish_reason: Some("stop".to_string()),
-                }],
-                usage: Some(Usage {
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    total_tokens: 0,
-                }),
-            };
-            
-            return Ok(chat_res);
+            anyhow::bail!(
+                "ChatGPT backend returned {} with body: {}",
+                status,
+                body
+            );
         }
 
         // Handle streaming response

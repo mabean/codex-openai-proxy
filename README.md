@@ -1,6 +1,12 @@
 # Codex OpenAI Proxy
 
-A proxy server that allows CLINE (Claude Code) and other OpenAI-compatible extensions to use ChatGPT Plus tokens from Codex authentication instead of requiring separate OpenAI API keys.
+> **Status:** prototype under hardening
+>
+> **Security posture (planned/target):** local-only by default • no cloud relay • secrets redacted in logs • reproducible builds • security docs in repo • explicit trust boundary
+>
+> **Current reality:** this fork is under active audit/hardening and should not yet be treated as a production-grade token-handling proxy.
+
+A proxy server that allows OpenAI-compatible clients to use ChatGPT/Codex authentication instead of requiring separate OpenAI API keys.
 
 ## Overview
 
@@ -8,62 +14,82 @@ This proxy bridges the gap between:
 - **Input**: Standard OpenAI Chat Completions API format (what CLINE expects)
 - **Output**: ChatGPT Responses API format (what ChatGPT backend uses)
 
-## Features
+## Trust signals / security notes
 
-- ✅ **OpenAI API Compatibility**: Accepts standard OpenAI Chat Completions requests
-- ✅ **ChatGPT Plus Integration**: Uses your existing ChatGPT Plus tokens  
-- ✅ **Cloudflare Bypass**: Handles ChatGPT's Cloudflare protection with browser-like headers
-- ✅ **HTTPS Support**: Works with extensions requiring secure connections (via ngrok)
-- ✅ **Streaming Responses**: Full streaming support for real-time responses
-- ✅ **CLINE Compatible**: Tested extensively with CLINE VS Code extension
-- ✅ **Array Content Support**: Handles both string and array message formats from OpenAI SDK
-- ✅ **Universal Routing**: Bulletproof request routing that bypasses complex warp conflicts
+- Local-first design is the target default
+- No cloud relay is intended
+- Public exposure is unsafe-by-default
+- Secrets must never be logged
+- This repo is being hardened for reproducible builds and explicit auditability
+- See planned docs: `SECURITY.md`, `THREAT_MODEL.md`, `BUILD.md`, `HARDENING_PLAN.md`
+
+## Current status
+
+This fork is currently in **audit and hardening mode**.
+
+Important:
+- the codebase is still being aligned with the real upstream contract
+- the primary request path is being switched from a development stub to the real backend path
+- security-sensitive deployment patterns must be treated as advanced/unsafe until explicitly documented
+- maturity claims should be interpreted conservatively until the hardening checklist is complete
+
+## Features (current / target split)
+
+Current:
+- OpenAI-compatible `/v1/chat/completions` ingress
+- Local auth file loading
+- Message/content conversion baseline
+- Direct Codex backend request path in active development
+
+Target:
+- Fully validated ChatGPT/Codex-backed upstream transport
+- Verified streaming support
+- Hardened auth handling
+- Auditable local-only deployment defaults
 
 ## Quick Start
 
-### 1. Build and Run
+### 1. Build and Run (local-only)
 
 ```bash
-git clone https://github.com/Securiteru/codex-openai-proxy.git
+git clone https://github.com/mabean/codex-openai-proxy.git
 cd codex-openai-proxy
 cargo build --release
-./target/release/codex-openai-proxy --port 8888 --auth-path ~/.codex/auth.json
+./target/release/codex-openai-proxy --port 8080 --auth-path ~/.codex/auth.json
 ```
 
-### 2. Setup HTTPS Tunnel (Required for CLINE)
+### 2. Local-only default
 
-Most VS Code extensions require HTTPS:
+This proxy should be treated as a **localhost-only service**.
 
-```bash
-# Install ngrok and create your own static domain at https://dashboard.ngrok.com/domains
-# Replace 'your-static-domain' with your unique domain name
-ngrok http 8888 --domain=your-static-domain.ngrok-free.app
-```
+Unsafe-by-default until hardening is complete:
+- ngrok exposure
+- reverse tunnels
+- public bind addresses
+- shared LAN exposure
 
-**Security Note**: Always use your own unique ngrok domain. Do not share your domain publicly to prevent unauthorized access to your proxy.
+If remote exposure is ever needed, it must be documented as an advanced deployment mode with downstream authentication and a separate threat review.
 
-### 3. Configure CLINE Extension
-
-In VS Code CLINE settings:
-- **Base URL**: `https://your-static-domain.ngrok-free.app`
-- **Model**: `gpt-5` (or `gpt-4`)
-- **API Key**: Any value (not used, but required by extension)
-
-### 4. Test Connection
+### 3. Test locally
 
 ```bash
 # Health check
-curl https://your-static-domain.ngrok-free.app/health
+curl http://127.0.0.1:8080/health
 
-# Test completion
-curl -X POST https://your-static-domain.ngrok-free.app/chat/completions \
+# Test completion (OpenAI-compatible ingress)
+curl -X POST http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer test-key" \
+  -H "Authorization: Bearer local-test-key" \
   -d '{
     "model": "gpt-5",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
+
+### 4. Client integration
+
+Any downstream client should initially be configured against a **localhost** base URL only.
+Do not expose the service publicly during the hardening phase.
 
 ## How It Works
 
@@ -121,6 +147,14 @@ Options:
 
 ### Authentication
 
+The proxy reads authentication from a local auth file. Treat that file as highly sensitive.
+
+Security guidance:
+- do not copy the auth file around casually
+- do not commit it
+- do not expose the proxy publicly while it can use those credentials
+- do not enable verbose logging without checking redaction behavior first
+
 The proxy automatically reads authentication from your Codex `auth.json` file:
 
 ```json
@@ -143,6 +177,29 @@ The proxy automatically reads authentication from your Codex `auth.json` file:
 - **POST** `/v1/chat/completions`
 - OpenAI-compatible chat completions endpoint
 - Supports: messages, model, temperature, max_tokens, stream, tools
+
+## Security roadmap
+
+This fork is being hardened toward:
+- localhost-only defaults
+- explicit allowed outbound hosts
+- secret-safe logging
+- reproducible builds
+- pinned dependency graph
+- security documentation and review checklist
+
+See:
+- `HARDENING_PLAN.md`
+- `SECURITY.md` (planned)
+- `THREAT_MODEL.md` (planned)
+- `BUILD.md` (planned)
+
+## Security-sensitive caveats
+
+- Treat OAuth/auth files as secrets.
+- Do not expose the proxy publicly during the hardening phase.
+- Do not assume successful health checks mean the upstream transport is fully validated.
+- Prefer local testing until the hardening plan is complete.
 
 ## Troubleshooting
 
@@ -177,6 +234,13 @@ curl -v -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-5", "messages": [{"role": "user", "content": "Test"}]}'
 ```
+
+## Known limitations
+
+- This fork is still under hardening and protocol verification.
+- OAuth/Codex backend behavior is still being validated against the real upstream contract.
+- Anthropic-compatible ingress is planned, but not implemented yet.
+- Public deployment guidance is intentionally omitted for now.
 
 ## Development
 
