@@ -5,24 +5,21 @@ use clap::Parser;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use streaming::{parse_codex_sse_to_events, render_anthropic_sse, render_openai_sse};
 use uuid::Uuid;
 use warp::{http::StatusCode, Filter, Reply};
 
+mod streaming;
 #[cfg(test)]
 mod tests;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Port to listen on
     #[arg(short, long, default_value = "8080")]
     port: u16,
-
-    /// Path to Codex auth.json file
     #[arg(long, default_value = "~/.codex/auth.json")]
     auth_path: String,
-
-    /// Upstream ChatGPT/Codex base URL
     #[arg(long, default_value = "https://chatgpt.com/backend-api")]
     upstream_base_url: String,
 }
@@ -180,10 +177,6 @@ enum ProxyError {
         message: String,
         field: Option<String>,
     },
-    UnsupportedFeature {
-        feature: &'static str,
-        message: String,
-    },
     Auth {
         message: String,
     },
@@ -207,37 +200,23 @@ impl ProxyError {
             details: Some(err.to_string()),
         }
     }
-
     fn openai_status_code(&self) -> StatusCode {
         match self {
             Self::InvalidJson { .. } | Self::Validation { .. } | Self::Auth { .. } => {
                 StatusCode::BAD_REQUEST
             }
-            Self::UnsupportedFeature { .. } => StatusCode::NOT_IMPLEMENTED,
             Self::UpstreamUnauthorized { .. }
             | Self::UpstreamBadRequest { .. }
             | Self::UpstreamUnavailable { .. }
             | Self::UpstreamProtocol { .. } => StatusCode::BAD_GATEWAY,
         }
     }
-
     fn anthropic_status_code(&self) -> StatusCode {
-        match self {
-            Self::InvalidJson { .. } | Self::Validation { .. } | Self::Auth { .. } => {
-                StatusCode::BAD_REQUEST
-            }
-            Self::UnsupportedFeature { .. } => StatusCode::NOT_IMPLEMENTED,
-            Self::UpstreamUnauthorized { .. }
-            | Self::UpstreamBadRequest { .. }
-            | Self::UpstreamUnavailable { .. }
-            | Self::UpstreamProtocol { .. } => StatusCode::BAD_GATEWAY,
-        }
+        self.openai_status_code()
     }
-
     fn openai_type(&self) -> &'static str {
         match self {
             Self::InvalidJson { .. } | Self::Validation { .. } => "invalid_request_error",
-            Self::UnsupportedFeature { .. } => "unsupported_feature",
             Self::Auth { .. } => "auth_error",
             Self::UpstreamUnauthorized { .. } => "upstream_unauthorized",
             Self::UpstreamBadRequest { .. } => "upstream_bad_request",
@@ -245,12 +224,10 @@ impl ProxyError {
             Self::UpstreamProtocol { .. } => "upstream_protocol_error",
         }
     }
-
     fn openai_code(&self) -> &'static str {
         match self {
             Self::InvalidJson { .. } => "invalid_json",
             Self::Validation { .. } => "validation_error",
-            Self::UnsupportedFeature { feature, .. } => feature,
             Self::Auth { .. } => "auth_error",
             Self::UpstreamUnauthorized { .. } => "upstream_unauthorized",
             Self::UpstreamBadRequest { .. } => "upstream_bad_request",
@@ -258,32 +235,28 @@ impl ProxyError {
             Self::UpstreamProtocol { .. } => "upstream_protocol_error",
         }
     }
-
     fn anthropic_type(&self) -> &'static str {
         match self {
             Self::InvalidJson { .. } | Self::Validation { .. } | Self::Auth { .. } => {
                 "invalid_request_error"
             }
-            Self::UnsupportedFeature { .. } => "not_implemented_error",
             Self::UpstreamUnauthorized { .. } => "authentication_error",
             Self::UpstreamBadRequest { .. }
             | Self::UpstreamUnavailable { .. }
             | Self::UpstreamProtocol { .. } => "api_error",
         }
     }
-
     fn message(&self) -> String {
         match self {
-            Self::InvalidJson { details } => match details {
-                Some(details) => format!("Invalid JSON: {}", details),
-                None => "Invalid JSON".to_string(),
-            },
-            Self::Validation { message, field } => match field {
-                Some(field) => format!("{} (field: {})", message, field),
-                None => message.clone(),
-            },
-            Self::UnsupportedFeature { message, .. }
-            | Self::Auth { message }
+            Self::InvalidJson { details } => details
+                .clone()
+                .map(|d| format!("Invalid JSON: {}", d))
+                .unwrap_or_else(|| "Invalid JSON".to_string()),
+            Self::Validation { message, field } => field
+                .as_ref()
+                .map(|f| format!("{} (field: {})", message, f))
+                .unwrap_or_else(|| message.clone()),
+            Self::Auth { message }
             | Self::UpstreamUnauthorized { message }
             | Self::UpstreamBadRequest { message }
             | Self::UpstreamUnavailable { message }
@@ -298,20 +271,17 @@ struct LegacyAuthFile {
     api_key: Option<String>,
     tokens: Option<LegacyTokenData>,
 }
-
 #[derive(Deserialize, Debug)]
 struct LegacyTokenData {
     access_token: String,
     account_id: String,
 }
-
 #[derive(Deserialize, Debug)]
 struct OpenClawAuthProfiles {
     profiles: Option<std::collections::HashMap<String, OpenClawProfile>>,
     #[serde(rename = "lastGood")]
     last_good: Option<std::collections::HashMap<String, String>>,
 }
-
 #[derive(Deserialize, Debug)]
 struct OpenClawProfile {
     #[serde(rename = "type")]
@@ -333,24 +303,19 @@ impl ProxyServer {
         } else {
             auth_path.to_string()
         };
-
         let auth_content = tokio::fs::read_to_string(&auth_path)
             .await
             .with_context(|| format!("Failed to read auth file: {}", auth_path))?;
-
         let auth_data = Self::parse_auth_data(&auth_content).with_context(|| {
             format!("Failed to parse supported auth file format: {}", auth_path)
         })?;
-
         if auth_data.api_key.is_none() && auth_data.access_token.is_none() {
             anyhow::bail!("auth file did not contain a usable API key or OAuth access token")
         }
-
         let client = Client::builder()
-            .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .user_agent("pi (codex-openai-proxy)")
             .build()
             .context("Failed to create HTTP client")?;
-
         Ok(Self {
             client,
             auth_data,
@@ -370,7 +335,6 @@ impl ProxyServer {
                 });
             }
         }
-
         if let Ok(openclaw) = serde_json::from_str::<OpenClawAuthProfiles>(raw) {
             if let (Some(profiles), Some(last_good)) = (openclaw.profiles, openclaw.last_good) {
                 if let Some(profile_id) = last_good.get("openai-codex") {
@@ -392,7 +356,6 @@ impl ProxyServer {
                 }
             }
         }
-
         anyhow::bail!("unsupported auth file format")
     }
 
@@ -401,23 +364,19 @@ impl ProxyServer {
         anthropic_req: AnthropicMessagesRequest,
     ) -> Result<ChatCompletionsRequest, ProxyError> {
         validate_anthropic_request(&anthropic_req)?;
-
         let mut messages = Vec::new();
-
         if let Some(system) = anthropic_req.system {
             messages.push(ChatMessage {
                 role: "system".to_string(),
                 content: system,
             });
         }
-
         for msg in anthropic_req.messages {
             messages.push(ChatMessage {
                 role: msg.role,
                 content: msg.content,
             });
         }
-
         Ok(ChatCompletionsRequest {
             model: anthropic_req.model,
             messages,
@@ -431,10 +390,8 @@ impl ProxyServer {
         chat_req: ChatCompletionsRequest,
     ) -> Result<ResponsesApiRequest, ProxyError> {
         validate_chat_request(&chat_req)?;
-
         let mut input = Vec::new();
         let mut system_parts = Vec::new();
-
         for msg in chat_req.messages {
             let content_text = flatten_message_content(&msg.content).map_err(|message| {
                 ProxyError::Validation {
@@ -442,26 +399,19 @@ impl ProxyServer {
                     field: Some("messages[].content".to_string()),
                 }
             })?;
-
             match msg.role.as_str() {
                 "system" => system_parts.push(content_text),
                 "user" => input.push(ResponsesInputItem::UserMessage {
                     role: "user".to_string(),
                     content: vec![InputContentItem::InputText { text: content_text }],
                 }),
-                "assistant" => {
-                    // Keep baseline ingress simple and valid for upstream.
-                    // Assistant history can be added later using the fuller OpenAI Responses shape.
-                }
-                _ => {
-                    input.push(ResponsesInputItem::UserMessage {
-                        role: "user".to_string(),
-                        content: vec![InputContentItem::InputText { text: content_text }],
-                    });
-                }
+                "assistant" => {}
+                _ => input.push(ResponsesInputItem::UserMessage {
+                    role: "user".to_string(),
+                    content: vec![InputContentItem::InputText { text: content_text }],
+                }),
             }
         }
-
         if input.is_empty() {
             return Err(ProxyError::Validation {
                 message: "at least one user message is required for the current hardened path"
@@ -469,13 +419,11 @@ impl ProxyServer {
                 field: Some("messages".to_string()),
             });
         }
-
         let instructions = if system_parts.is_empty() {
             "You are a helpful AI assistant. Provide clear, accurate, and concise responses to user questions and requests.".to_string()
         } else {
             system_parts.join("\n\n")
         };
-
         Ok(ResponsesApiRequest {
             model: normalize_codex_model_id(&chat_req.model),
             instructions,
@@ -486,18 +434,18 @@ impl ProxyServer {
             reasoning: None,
             store: false,
             stream: true,
-            text: json!({ "verbosity": "medium" }),
+            text: json!({"verbosity":"medium","format":{"type":"text"}}),
             include: vec!["reasoning.encrypted_content".to_string()],
             prompt_cache_key: Uuid::new_v4().to_string(),
         })
     }
 
-    async fn proxy_request(
+    async fn upstream_sse_text(
         &self,
         chat_req: ChatCompletionsRequest,
-    ) -> Result<ChatCompletionsResponse, ProxyError> {
+    ) -> Result<(String, String), ProxyError> {
         let responses_req = self.convert_chat_to_responses(chat_req)?;
-
+        let model = responses_req.model.clone();
         let mut request_builder = self
             .client
             .post(format!(
@@ -509,7 +457,6 @@ impl ProxyServer {
             .header("OpenAI-Beta", "responses=experimental")
             .header("originator", "pi")
             .header("User-Agent", "pi (codex-openai-proxy)");
-
         if let Some(access_token) = &self.auth_data.access_token {
             request_builder =
                 request_builder.header("Authorization", format!("Bearer {}", access_token));
@@ -524,10 +471,8 @@ impl ProxyServer {
                 message: "no usable auth material found".to_string(),
             });
         }
-
         let session_id = Uuid::new_v4();
         request_builder = request_builder.header("session_id", session_id.to_string());
-
         let response = request_builder
             .json(&responses_req)
             .send()
@@ -535,7 +480,6 @@ impl ProxyServer {
             .map_err(|e| ProxyError::UpstreamUnavailable {
                 message: format!("failed to send request to upstream: {}", e),
             })?;
-
         let status = response.status();
         let body = response
             .text()
@@ -543,24 +487,42 @@ impl ProxyServer {
             .map_err(|e| ProxyError::UpstreamProtocol {
                 message: format!("failed to read upstream response body: {}", e),
             })?;
-
         if !status.is_success() {
             let message = if body.trim().is_empty() {
                 format!("upstream returned {}", status)
             } else {
                 format!("upstream returned {} with body: {}", status, body)
             };
-
             return Err(classify_upstream_error(status, message));
         }
+        Ok((model, body))
+    }
 
+    async fn proxy_request_stream(
+        &self,
+        chat_req: ChatCompletionsRequest,
+        api_family: ApiFamily,
+    ) -> Result<(String, String), ProxyError> {
+        let (model, sse_text) = self.upstream_sse_text(chat_req).await?;
+        let events = parse_codex_sse_to_events(&sse_text)?;
+        let rendered = match api_family {
+            ApiFamily::OpenAi => render_openai_sse(&events, &model),
+            ApiFamily::Anthropic => render_anthropic_sse(&events, &model),
+        };
+        Ok((model, rendered))
+    }
+
+    async fn proxy_request(
+        &self,
+        chat_req: ChatCompletionsRequest,
+    ) -> Result<ChatCompletionsResponse, ProxyError> {
+        let (model, body) = self.upstream_sse_text(chat_req).await?;
         let response_content = extract_response_content(&body)?;
-
         Ok(ChatCompletionsResponse {
             id: format!("chatcmpl-{}", Uuid::new_v4()),
             object: "chat.completion".to_string(),
             created: chrono::Utc::now().timestamp(),
-            model: responses_req.model.clone(),
+            model,
             choices: vec![Choice {
                 index: 0,
                 message: ChatResponseMessage {
@@ -579,7 +541,13 @@ impl ProxyServer {
 }
 
 fn normalize_codex_model_id(model: &str) -> String {
-    model.rsplit('/').next().unwrap_or(model).to_string()
+    let short = model.rsplit('/').next().unwrap_or(model);
+    let lower = short.to_lowercase();
+    if lower.starts_with("claude-") {
+        "gpt-5.4".to_string()
+    } else {
+        short.to_string()
+    }
 }
 
 fn validate_chat_request(req: &ChatCompletionsRequest) -> Result<(), ProxyError> {
@@ -589,14 +557,12 @@ fn validate_chat_request(req: &ChatCompletionsRequest) -> Result<(), ProxyError>
             field: Some("model".to_string()),
         });
     }
-
     if req.messages.is_empty() {
         return Err(ProxyError::Validation {
             message: "messages must not be empty".to_string(),
             field: Some("messages".to_string()),
         });
     }
-
     for (idx, msg) in req.messages.iter().enumerate() {
         if msg.role.trim().is_empty() {
             return Err(ProxyError::Validation {
@@ -605,7 +571,6 @@ fn validate_chat_request(req: &ChatCompletionsRequest) -> Result<(), ProxyError>
             });
         }
     }
-
     Ok(())
 }
 
@@ -616,21 +581,18 @@ fn validate_anthropic_request(req: &AnthropicMessagesRequest) -> Result<(), Prox
             field: Some("model".to_string()),
         });
     }
-
     if req.messages.is_empty() {
         return Err(ProxyError::Validation {
             message: "messages must not be empty".to_string(),
             field: Some("messages".to_string()),
         });
     }
-
     if req.max_tokens.unwrap_or(0) == 0 {
         return Err(ProxyError::Validation {
             message: "max_tokens must be greater than 0".to_string(),
             field: Some("max_tokens".to_string()),
         });
     }
-
     for (idx, msg) in req.messages.iter().enumerate() {
         if msg.role != "user" && msg.role != "assistant" {
             return Err(ProxyError::Validation {
@@ -639,7 +601,6 @@ fn validate_anthropic_request(req: &AnthropicMessagesRequest) -> Result<(), Prox
             });
         }
     }
-
     Ok(())
 }
 
@@ -665,7 +626,6 @@ fn flatten_message_content(content: &Value) -> std::result::Result<String, Strin
                     _ => {}
                 }
             }
-
             if parts.is_empty() {
                 Err("message content array must contain at least one text item".to_string())
             } else {
@@ -696,13 +656,11 @@ fn extract_response_content(response_text: &str) -> Result<String, ProxyError> {
     let mut response_content = String::new();
     let mut final_item_content = String::new();
     let mut saw_delta = false;
-
     for line in response_text.lines() {
         if let Some(json_data) = line.strip_prefix("data: ") {
             if json_data == "[DONE]" {
                 break;
             }
-
             if let Ok(event) = serde_json::from_str::<serde_json::Value>(json_data) {
                 if let Some(event_type) = event.get("type").and_then(|v| v.as_str()) {
                     match event_type {
@@ -733,17 +691,14 @@ fn extract_response_content(response_text: &str) -> Result<String, ProxyError> {
             }
         }
     }
-
     if !saw_delta && !final_item_content.is_empty() {
         response_content = final_item_content;
     }
-
     if response_content.is_empty() {
         return Err(ProxyError::UpstreamProtocol {
             message: "upstream returned success but no parsable response content".to_string(),
         });
     }
-
     Ok(response_content)
 }
 
@@ -757,7 +712,6 @@ fn convert_chat_to_anthropic(
         .next()
         .map(|choice| choice.message.content)
         .unwrap_or_default();
-
     AnthropicMessagesResponse {
         id: format!("msg_{}", Uuid::new_v4().simple()),
         response_type: "message".to_string(),
@@ -778,16 +732,9 @@ fn convert_chat_to_anthropic(
 
 fn openai_error_response(error: ProxyError) -> warp::reply::Response {
     let status = error.openai_status_code();
-    let body = json!({
-        "error": {
-            "message": error.message(),
-            "type": error.openai_type(),
-            "code": error.openai_code()
-        }
-    });
+    let body = json!({"error":{"message": error.message(),"type": error.openai_type(),"code": error.openai_code()}});
     warp::reply::with_status(warp::reply::json(&body), status).into_response()
 }
-
 fn anthropic_error_response(error: ProxyError) -> warp::reply::Response {
     let status = error.anthropic_status_code();
     let body = AnthropicErrorEnvelope {
@@ -799,7 +746,6 @@ fn anthropic_error_response(error: ProxyError) -> warp::reply::Response {
     };
     warp::reply::with_status(warp::reply::json(&body), status).into_response()
 }
-
 fn method_not_allowed_response(api_family: ApiFamily) -> warp::reply::Response {
     match api_family {
         ApiFamily::OpenAi => openai_error_response(ProxyError::Validation {
@@ -812,31 +758,10 @@ fn method_not_allowed_response(api_family: ApiFamily) -> warp::reply::Response {
         }),
     }
 }
-
 fn not_found_response(api_family: ApiFamily) -> warp::reply::Response {
     match api_family {
-        ApiFamily::OpenAi => warp::reply::with_status(
-            warp::reply::json(&json!({
-                "error": {
-                    "message": "Not found",
-                    "type": "invalid_request_error",
-                    "code": "not_found"
-                }
-            })),
-            StatusCode::NOT_FOUND,
-        )
-        .into_response(),
-        ApiFamily::Anthropic => warp::reply::with_status(
-            warp::reply::json(&AnthropicErrorEnvelope {
-                envelope_type: "error".to_string(),
-                error: AnthropicErrorBody {
-                    error_type: "invalid_request_error".to_string(),
-                    message: "Not found".to_string(),
-                },
-            }),
-            StatusCode::NOT_FOUND,
-        )
-        .into_response(),
+        ApiFamily::OpenAi => warp::reply::with_status(warp::reply::json(&json!({"error":{"message":"Not found","type":"invalid_request_error","code":"not_found"}})), StatusCode::NOT_FOUND).into_response(),
+        ApiFamily::Anthropic => warp::reply::with_status(warp::reply::json(&AnthropicErrorEnvelope { envelope_type: "error".to_string(), error: AnthropicErrorBody { error_type: "invalid_request_error".to_string(), message: "Not found".to_string() } }), StatusCode::NOT_FOUND).into_response(),
     }
 }
 
@@ -862,7 +787,6 @@ fn log_request(method: &warp::http::Method, path: &str, headers: &warp::http::He
         .get("user-agent")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown");
-
     println!(
         "[request] method={} path={} auth_present={} user_agent={}",
         method, path, auth_present, ua
@@ -873,10 +797,8 @@ fn log_request(method: &warp::http::Method, path: &str, headers: &warp::http::He
 async fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
-
-    println!("Initializing Codex OpenAI Proxy...");
-
     let proxy = ProxyServer::new(&args.auth_path, &args.upstream_base_url).await?;
+    println!("Initializing Codex OpenAI Proxy...");
     println!("✓ Loaded authentication from {}", args.auth_path);
     println!(
         "✓ Auth mode: {}",
@@ -897,9 +819,7 @@ async fn main() -> Result<()> {
         }
     );
     println!("✓ Upstream base URL: {}", proxy.upstream_base_url);
-
     let proxy_filter = warp::any().map(move || proxy.clone());
-
     let cors = warp::cors()
         .allow_any_origin()
         .allow_headers(vec![
@@ -919,7 +839,6 @@ async fn main() -> Result<()> {
             "x-stainless-timeout",
         ])
         .allow_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"]);
-
     let universal_handler = warp::any()
         .and(warp::method())
         .and(warp::path::full())
@@ -927,9 +846,7 @@ async fn main() -> Result<()> {
         .and(warp::body::bytes())
         .and(proxy_filter.clone())
         .and_then(universal_request_handler);
-
     let routes = universal_handler.with(cors).with(warp::log("codex_proxy"));
-
     println!(
         "🚀 Codex OpenAI Proxy listening on http://127.0.0.1:{}",
         args.port
@@ -944,9 +861,7 @@ async fn main() -> Result<()> {
         args.port
     );
     println!("   Binding mode: localhost-only");
-
     warp::serve(routes).run(([127, 0, 0, 1], args.port)).await;
-
     Ok(())
 }
 
@@ -958,95 +873,42 @@ async fn universal_request_handler(
     proxy: ProxyServer,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let path_str = path.as_str();
-
     log_request(&method, path_str, &headers);
-
     let response = match (method.as_str(), path_str) {
-        ("GET", "/health") => warp::reply::json(&json!({
-            "status": "ok",
-            "service": "codex-openai-proxy"
-        }))
-        .into_response(),
-        ("GET", "/models") | ("GET", "/v1/models") => warp::reply::json(&json!({
-            "object": "list",
-            "data": [
-                {
-                    "id": "gpt-5.4",
-                    "object": "model",
-                    "created": 1687882411,
-                    "owned_by": "openai-codex"
-                }
-            ]
-        }))
-        .into_response(),
+        ("GET", "/health") => warp::reply::json(&json!({"status":"ok","service":"codex-openai-proxy"})).into_response(),
+        ("GET", "/models") | ("GET", "/v1/models") => warp::reply::json(&json!({"object":"list","data":[{"id":"gpt-5.4","object":"model","created":1687882411,"owned_by":"openai-codex"}]})).into_response(),
         ("POST", "/v1/chat/completions") => {
-            let chat_req = match serde_json::from_slice::<ChatCompletionsRequest>(&body) {
-                Ok(req) => req,
-                Err(err) => return Ok(openai_error_response(ProxyError::invalid_json(err))),
-            };
-
+            let chat_req = match serde_json::from_slice::<ChatCompletionsRequest>(&body) { Ok(req) => req, Err(err) => return Ok(openai_error_response(ProxyError::invalid_json(err))) };
             if chat_req.stream.unwrap_or(false) {
-                return Ok(openai_error_response(ProxyError::UnsupportedFeature {
-                    feature: "streaming_not_supported",
-                    message: "Streaming is not supported yet in the hardened path".to_string(),
-                }));
-            }
-
-            match proxy.proxy_request(chat_req).await {
-                Ok(response) => warp::reply::json(&response).into_response(),
-                Err(err) => {
-                    eprintln!("Proxy error: {:?}", err);
-                    openai_error_response(err)
+                match proxy.proxy_request_stream(chat_req, ApiFamily::OpenAi).await {
+                    Ok((_model, sse_body)) => warp::reply::with_header(sse_body, "content-type", "text/event-stream").into_response(),
+                    Err(err) => openai_error_response(err),
                 }
+            } else {
+                match proxy.proxy_request(chat_req).await { Ok(response) => warp::reply::json(&response).into_response(), Err(err) => openai_error_response(err) }
             }
         }
         ("POST", "/v1/messages") => {
-            let anthropic_req = match serde_json::from_slice::<AnthropicMessagesRequest>(&body) {
-                Ok(req) => req,
-                Err(err) => return Ok(anthropic_error_response(ProxyError::invalid_json(err))),
-            };
-
-            if anthropic_req.stream.unwrap_or(false) {
-                return Ok(anthropic_error_response(ProxyError::UnsupportedFeature {
-                    feature: "streaming_not_supported",
-                    message: "Streaming is not supported yet in the hardened path".to_string(),
-                }));
-            }
-
+            let anthropic_req = match serde_json::from_slice::<AnthropicMessagesRequest>(&body) { Ok(req) => req, Err(err) => return Ok(anthropic_error_response(ProxyError::invalid_json(err))) };
+            let stream = anthropic_req.stream.unwrap_or(false);
             let model = anthropic_req.model.clone();
-            let chat_req = match proxy.convert_anthropic_to_chat(anthropic_req) {
-                Ok(req) => req,
-                Err(err) => return Ok(anthropic_error_response(err)),
-            };
-
-            match proxy.proxy_request(chat_req).await {
-                Ok(response) => {
-                    let anthropic_res =
-                        convert_chat_to_anthropic(&normalize_codex_model_id(&model), response);
-                    warp::reply::json(&anthropic_res).into_response()
+            let chat_req = match proxy.convert_anthropic_to_chat(anthropic_req) { Ok(req) => req, Err(err) => return Ok(anthropic_error_response(err)) };
+            if stream {
+                match proxy.proxy_request_stream(chat_req, ApiFamily::Anthropic).await {
+                    Ok((_model, sse_body)) => warp::reply::with_header(sse_body, "content-type", "text/event-stream").into_response(),
+                    Err(err) => anthropic_error_response(err),
                 }
-                Err(err) => {
-                    eprintln!("Anthropic proxy error: {:?}", err);
-                    anthropic_error_response(err)
+            } else {
+                match proxy.proxy_request(chat_req).await {
+                    Ok(response) => warp::reply::json(&convert_chat_to_anthropic(&normalize_codex_model_id(&model), response)).into_response(),
+                    Err(err) => anthropic_error_response(err),
                 }
             }
         }
-        ("GET", "/v1/chat/completions") | ("GET", "/v1/messages") => {
-            if path_str == "/v1/messages" {
-                method_not_allowed_response(ApiFamily::Anthropic)
-            } else {
-                method_not_allowed_response(ApiFamily::OpenAi)
-            }
-        }
-        _ => {
-            if path_str.starts_with("/v1/messages") {
-                not_found_response(ApiFamily::Anthropic)
-            } else {
-                not_found_response(ApiFamily::OpenAi)
-            }
-        }
+        ("GET", "/v1/chat/completions") => method_not_allowed_response(ApiFamily::OpenAi),
+        ("GET", "/v1/messages") => method_not_allowed_response(ApiFamily::Anthropic),
+        _ => if path_str.starts_with("/v1/messages") { not_found_response(ApiFamily::Anthropic) } else { not_found_response(ApiFamily::OpenAi) },
     };
-
     Ok(response)
 }
 

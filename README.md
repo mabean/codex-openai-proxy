@@ -131,6 +131,41 @@ curl -X POST http://127.0.0.1:8080/v1/messages \
 Any downstream client should initially be configured against a **localhost** base URL only.
 Do not expose the service publicly during the hardening phase.
 
+### 5. Claude Code setup
+
+Claude Code can be pointed at this gateway through Anthropic-compatible env vars.
+
+Recommended global shell configuration:
+
+```bash
+export ANTHROPIC_BASE_URL="http://127.0.0.1:8080"
+export ANTHROPIC_API_KEY="local-proxy"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+```
+
+Why this works:
+- Claude Code talks to the Anthropic-compatible `/v1/messages` surface
+- this proxy translates that request into the working Codex/ChatGPT upstream path
+- Anthropic-facing model names from Claude Code are normalized onto the supported Codex model path
+
+Minimal verification:
+
+```bash
+claude -p --bare --model claude-sonnet-4-5 --output-format text \
+  "Reply with exactly: CLAUDE_STREAM_OK"
+```
+
+Expected output:
+
+```text
+CLAUDE_STREAM_OK
+```
+
+Notes:
+- keep the proxy running locally on port `8080`
+- `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` reduces unrelated first-party side traffic during proxy usage
+- the gateway is currently intended for local development use, not public exposure
+
 ## How It Works
 
 ### Request Flow
