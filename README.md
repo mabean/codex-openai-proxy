@@ -2,7 +2,7 @@
 
 > **Status:** prototype under hardening
 >
-> **Security posture (planned/target):** local-only by default • no cloud relay • secrets redacted in logs • reproducible builds • security docs in repo • explicit trust boundary
+> **Security posture:** local-only by default • no cloud relay • explicit trust boundary • security docs in repo
 >
 > **Current reality:** this fork is under active audit/hardening and should not yet be treated as a production-grade token-handling proxy.
 
@@ -21,7 +21,11 @@ This proxy bridges the gap between:
 - Public exposure is unsafe-by-default
 - Secrets must never be logged
 - This repo is being hardened for reproducible builds and explicit auditability
-- See planned docs: `SECURITY.md`, `THREAT_MODEL.md`, `BUILD.md`, `HARDENING_PLAN.md`
+- Security docs in this repo:
+- `SECURITY.md`
+- `THREAT_MODEL.md`
+- `BUILD.md`
+- `HARDENING_PLAN.md`
 
 ## Current status
 
@@ -190,9 +194,9 @@ This fork is being hardened toward:
 
 See:
 - `HARDENING_PLAN.md`
-- `SECURITY.md` (planned)
-- `THREAT_MODEL.md` (planned)
-- `BUILD.md` (planned)
+- `SECURITY.md`
+- `THREAT_MODEL.md`
+- `BUILD.md`
 
 ## Security-sensitive caveats
 

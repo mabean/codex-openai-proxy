@@ -1,0 +1,29 @@
+# THREAT MODEL
+
+## Trust boundary
+The proxy is designed to run on the same machine as the user and consume local auth material. The primary trust boundary is:
+
+- trusted local process
+- trusted local auth store
+- trusted upstream Codex/ChatGPT backend
+
+## Main threats
+1. Secret leakage through logs
+2. Secret leakage through accidental public exposure
+3. Supply-chain compromise through dependencies
+4. Hidden or unexpected outbound network traffic
+5. Fake-success behavior that hides real upstream/auth failures
+
+## Non-goals for current phase
+- multi-tenant deployment
+- public internet deployment
+- centralized auth distribution
+- production SaaS hosting model
+
+## Mitigations in progress
+- localhost bind
+- auth validation
+- honest error responses
+- removal of fake response paths
+- transport/header minimization
+- reproducible build path
