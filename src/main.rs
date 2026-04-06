@@ -154,8 +154,9 @@ impl ProxyServer {
             .await
             .with_context(|| format!("Failed to read auth file: {}", auth_path))?;
 
-        let auth_data = Self::parse_auth_data(&auth_content)
-            .with_context(|| format!("Failed to parse supported auth file format: {}", auth_path))?;
+        let auth_data = Self::parse_auth_data(&auth_content).with_context(|| {
+            format!("Failed to parse supported auth file format: {}", auth_path)
+        })?;
 
         if auth_data.api_key.is_none() && auth_data.access_token.is_none() {
             anyhow::bail!("auth file did not contain a usable API key or OAuth access token")
@@ -167,10 +168,7 @@ impl ProxyServer {
             .build()
             .context("Failed to create HTTP client")?;
 
-        Ok(Self {
-            client,
-            auth_data,
-        })
+        Ok(Self { client, auth_data })
     }
 
     fn parse_auth_data(raw: &str) -> Result<AuthData> {
@@ -214,7 +212,7 @@ impl ProxyServer {
     fn convert_chat_to_responses(&self, chat_req: ChatCompletionsRequest) -> ResponsesApiRequest {
         // Convert messages to ResponseItems
         let mut input = Vec::new();
-        
+
         for msg in chat_req.messages {
             // Convert content to string (handle both string and array formats)
             let content_text = match &msg.content {
@@ -224,23 +222,23 @@ impl ProxyServer {
                     arr.iter()
                         .filter_map(|v| {
                             if let Some(obj) = v.as_object() {
-                                obj.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                                obj.get("text")
+                                    .and_then(|t| t.as_str())
+                                    .map(|s| s.to_string())
                             } else {
                                 v.as_str().map(|s| s.to_string())
                             }
                         })
                         .collect::<Vec<String>>()
                         .join(" ")
-                },
+                }
                 _ => msg.content.to_string(),
             };
-            
+
             input.push(ResponseItem::Message {
                 id: None,
                 role: msg.role,
-                content: vec![ContentItem::InputText {
-                    text: content_text,
-                }],
+                content: vec![ContentItem::InputText { text: content_text }],
             });
         }
 
@@ -261,13 +259,16 @@ impl ProxyServer {
         }
     }
 
-
-    async fn proxy_request(&self, chat_req: ChatCompletionsRequest) -> Result<ChatCompletionsResponse> {
+    async fn proxy_request(
+        &self,
+        chat_req: ChatCompletionsRequest,
+    ) -> Result<ChatCompletionsResponse> {
         // Convert to Responses API format
         let responses_req = self.convert_chat_to_responses(chat_req);
-        
+
         // Build request to ChatGPT backend with browser-like headers
-        let mut request_builder = self.client
+        let mut request_builder = self
+            .client
             .post("https://chatgpt.com/backend-api/codex/responses")
             .header("Content-Type", "application/json")
             .header("Accept", "text/event-stream")
@@ -277,12 +278,14 @@ impl ProxyServer {
 
         // Add authentication
         if let Some(access_token) = &self.auth_data.access_token {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", access_token));
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", access_token));
             if let Some(account_id) = &self.auth_data.account_id {
                 request_builder = request_builder.header("chatgpt-account-id", account_id);
             }
         } else if let Some(api_key) = &self.auth_data.api_key {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", api_key));
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", api_key));
         } else {
             anyhow::bail!("no usable auth material found")
         }
@@ -301,12 +304,8 @@ impl ProxyServer {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            
-            anyhow::bail!(
-                "ChatGPT backend returned {} with body: {}",
-                status,
-                body
-            );
+
+            anyhow::bail!("ChatGPT backend returned {} with body: {}", status, body);
         }
 
         // Handle SSE response from Codex backend.
@@ -318,8 +317,7 @@ impl ProxyServer {
         let lines: Vec<&str> = response_text.lines().collect();
 
         for line in lines {
-            if line.starts_with("data: ") {
-                let json_data = &line[6..];
+            if let Some(json_data) = line.strip_prefix("data: ") {
                 if json_data == "[DONE]" {
                     break;
                 }
@@ -335,9 +333,13 @@ impl ProxyServer {
                             }
                             "response.output_item.done" => {
                                 if let Some(item) = event.get("item") {
-                                    if let Some(content_arr) = item.get("content").and_then(|v| v.as_array()) {
+                                    if let Some(content_arr) =
+                                        item.get("content").and_then(|v| v.as_array())
+                                    {
                                         for content_item in content_arr {
-                                            if let Some(text) = content_item.get("text").and_then(|v| v.as_str()) {
+                                            if let Some(text) =
+                                                content_item.get("text").and_then(|v| v.as_str())
+                                            {
                                                 final_item_content.push_str(text);
                                             }
                                         }
@@ -379,7 +381,7 @@ impl ProxyServer {
                 total_tokens: 0,
             }),
         };
-        
+
         Ok(chat_res)
     }
 }
@@ -422,7 +424,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     println!("Initializing Codex OpenAI Proxy...");
-    
+
     let proxy = ProxyServer::new(&args.auth_path).await?;
     println!("✓ Loaded authentication from {}", args.auth_path);
     println!(
@@ -449,7 +451,20 @@ async fn main() -> Result<()> {
     // CORS headers - allow all headers to fix CLINE issues
     let cors = warp::cors()
         .allow_any_origin()
-        .allow_headers(vec!["authorization", "content-type", "accept", "accept-encoding", "x-stainless-arch", "x-stainless-lang", "x-stainless-os", "x-stainless-package-version", "x-stainless-retry-count", "x-stainless-runtime", "x-stainless-runtime-version", "x-stainless-timeout"])
+        .allow_headers(vec![
+            "authorization",
+            "content-type",
+            "accept",
+            "accept-encoding",
+            "x-stainless-arch",
+            "x-stainless-lang",
+            "x-stainless-os",
+            "x-stainless-package-version",
+            "x-stainless-retry-count",
+            "x-stainless-runtime",
+            "x-stainless-runtime-version",
+            "x-stainless-timeout",
+        ])
         .allow_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"]);
 
     // BULLETPROOF SOLUTION - Single universal handler (removed old catch_all)
@@ -461,18 +476,20 @@ async fn main() -> Result<()> {
         .and(proxy_filter.clone())
         .and_then(universal_request_handler);
 
-    let routes = universal_handler
-        .with(cors)
-        .with(warp::log("codex_proxy"));
+    let routes = universal_handler.with(cors).with(warp::log("codex_proxy"));
 
-    println!("🚀 Codex OpenAI Proxy listening on http://127.0.0.1:{}", args.port);
+    println!(
+        "🚀 Codex OpenAI Proxy listening on http://127.0.0.1:{}",
+        args.port
+    );
     println!("   Health check: http://127.0.0.1:{}/health", args.port);
-    println!("   Chat endpoint: http://127.0.0.1:{}/v1/chat/completions", args.port);
+    println!(
+        "   Chat endpoint: http://127.0.0.1:{}/v1/chat/completions",
+        args.port
+    );
     println!("   Binding mode: localhost-only");
 
-    warp::serve(routes)
-        .run(([127, 0, 0, 1], args.port))
-        .await;
+    warp::serve(routes).run(([127, 0, 0, 1], args.port)).await;
 
     Ok(())
 }
@@ -486,21 +503,22 @@ async fn universal_request_handler(
     proxy: ProxyServer,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let path_str = path.as_str();
-    
+
     log_request(&method, path_str, &headers);
-    
+
     match (method.as_str(), path_str) {
         ("GET", "/health") => {
             println!("💚 Health check requested");
             Ok(warp::reply::json(&json!({
                 "status": "ok",
                 "service": "codex-openai-proxy"
-            })).into_response())
-        },
+            }))
+            .into_response())
+        }
         ("GET", "/models") | ("GET", "/v1/models") => {
             println!("📋 === MATCHED MODELS REQUEST ===");
             println!("📋 === END MATCHED ===\n");
-            
+
             let models_response = json!({
                 "object": "list",
                 "data": [
@@ -512,15 +530,15 @@ async fn universal_request_handler(
                     },
                     {
                         "id": "gpt-5",
-                        "object": "model", 
+                        "object": "model",
                         "created": 1687882411,
                         "owned_by": "openai"
                     }
                 ]
             });
-            
+
             Ok(warp::reply::json(&models_response).into_response())
-        },
+        }
         ("POST", "/v1/chat/completions") => {
             let chat_req: ChatCompletionsRequest = match serde_json::from_slice(&body) {
                 Ok(req) => req,
@@ -558,10 +576,15 @@ async fn universal_request_handler(
                 Err(e) => {
                     eprintln!("Proxy error: {:#}", e);
                     let message = e.to_string();
-                    let (status, code) = if message.contains("401") || message.to_lowercase().contains("unauthorized") {
+                    let (status, code) = if message.contains("401")
+                        || message.to_lowercase().contains("unauthorized")
+                    {
                         (warp::http::StatusCode::BAD_GATEWAY, "upstream_unauthorized")
                     } else if message.to_lowercase().contains("streaming") {
-                        (warp::http::StatusCode::NOT_IMPLEMENTED, "streaming_not_supported")
+                        (
+                            warp::http::StatusCode::NOT_IMPLEMENTED,
+                            "streaming_not_supported",
+                        )
                     } else if message.to_lowercase().contains("auth") {
                         (warp::http::StatusCode::BAD_REQUEST, "auth_error")
                     } else {
@@ -580,13 +603,13 @@ async fn universal_request_handler(
                     Ok(warp::reply::with_status(reply, status).into_response())
                 }
             }
-        },
+        }
         _ => {
             println!("❌ UNMATCHED: {} {}", method, path_str);
-            Ok(warp::reply::with_status(
-                "Not found",
-                warp::http::StatusCode::NOT_FOUND
-            ).into_response())
+            Ok(
+                warp::reply::with_status("Not found", warp::http::StatusCode::NOT_FOUND)
+                    .into_response(),
+            )
         }
     }
 }

@@ -19,8 +19,13 @@ async fn parses_legacy_auth_file() {
     )
     .unwrap();
 
-    let proxy = ProxyServer::new(file.path().to_str().unwrap()).await.unwrap();
-    assert_eq!(proxy.auth_data.access_token.as_deref(), Some("legacy-token"));
+    let proxy = ProxyServer::new(file.path().to_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        proxy.auth_data.access_token.as_deref(),
+        Some("legacy-token")
+    );
     assert_eq!(proxy.auth_data.account_id.as_deref(), Some("acc_123"));
 }
 
@@ -47,7 +52,9 @@ async fn parses_openclaw_auth_profiles_file() {
     )
     .unwrap();
 
-    let proxy = ProxyServer::new(file.path().to_str().unwrap()).await.unwrap();
+    let proxy = ProxyServer::new(file.path().to_str().unwrap())
+        .await
+        .unwrap();
     assert_eq!(proxy.auth_data.access_token.as_deref(), Some(jwt));
     assert_eq!(proxy.auth_data.account_id.as_deref(), Some("acc_openclaw"));
 }
@@ -61,5 +68,9 @@ async fn rejects_file_without_usable_credentials() {
     assert!(result.is_err());
     let err = result.err().unwrap();
     let msg = err.to_string();
-    assert!(msg.contains("parse") || msg.contains("supported auth file format") || msg.contains("usable"));
+    assert!(
+        msg.contains("parse")
+            || msg.contains("supported auth file format")
+            || msg.contains("usable")
+    );
 }
