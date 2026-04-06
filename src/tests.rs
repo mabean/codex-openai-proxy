@@ -25,6 +25,34 @@ async fn parses_legacy_auth_file() {
 }
 
 #[tokio::test]
+async fn parses_openclaw_auth_profiles_file() {
+    let file = NamedTempFile::new().unwrap();
+    let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjX29wZW5jbGF3In19.signature";
+    fs::write(
+        file.path(),
+        format!(
+            r#"{{
+                "profiles": {{
+                    "profile-1": {{
+                        "type": "oauth",
+                        "access": "{}"
+                    }}
+                }},
+                "lastGood": {{
+                    "openai-codex": "profile-1"
+                }}
+            }}"#,
+            jwt
+        ),
+    )
+    .unwrap();
+
+    let proxy = ProxyServer::new(file.path().to_str().unwrap()).await.unwrap();
+    assert_eq!(proxy.auth_data.access_token.as_deref(), Some(jwt));
+    assert_eq!(proxy.auth_data.account_id.as_deref(), Some("acc_openclaw"));
+}
+
+#[tokio::test]
 async fn rejects_file_without_usable_credentials() {
     let file = NamedTempFile::new().unwrap();
     fs::write(file.path(), r#"{"tokens": {}}"#).unwrap();

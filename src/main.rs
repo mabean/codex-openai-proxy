@@ -557,16 +557,27 @@ async fn universal_request_handler(
                 }
                 Err(e) => {
                     eprintln!("Proxy error: {:#}", e);
+                    let message = e.to_string();
+                    let (status, code) = if message.contains("401") || message.to_lowercase().contains("unauthorized") {
+                        (warp::http::StatusCode::BAD_GATEWAY, "upstream_unauthorized")
+                    } else if message.to_lowercase().contains("streaming") {
+                        (warp::http::StatusCode::NOT_IMPLEMENTED, "streaming_not_supported")
+                    } else if message.to_lowercase().contains("auth") {
+                        (warp::http::StatusCode::BAD_REQUEST, "auth_error")
+                    } else {
+                        (warp::http::StatusCode::BAD_GATEWAY, "upstream_error")
+                    };
+
                     let reply = warp::reply::json(&json!({
                         "error": {
-                            "message": format!("Proxy error: {}", e),
+                            "message": format!("Proxy error: {}", message),
                             "type": "proxy_error",
-                            "code": "internal_error"
+                            "code": code
                         }
                     }));
                     let reply = warp::reply::with_header(reply, "content-type", "application/json");
                     let reply = warp::reply::with_header(reply, "access-control-allow-origin", "*");
-                    Ok(reply.into_response())
+                    Ok(warp::reply::with_status(reply, status).into_response())
                 }
             }
         },
