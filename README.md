@@ -8,6 +8,19 @@
 
 A proxy server that allows OpenAI-compatible and Anthropic-compatible clients to use ChatGPT/Codex authentication instead of requiring separate provider API keys.
 
+## Trust signals
+
+- **Status:** prototype under hardening
+- **Default exposure:** localhost-only
+- **Cloud relay:** none intended
+- **Telemetry:** none intended
+- **Security docs:** `SECURITY.md`, `THREAT_MODEL.md`, `BUILD.md`
+- **Verification baseline:** `cargo fmt --check`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo build`
+- **Ingress surfaces:** OpenAI-compatible `/v1/chat/completions`, Anthropic-compatible `/v1/messages` (current non-streaming baseline)
+- **Secrets posture:** local auth material only; auth files must not be committed or publicly exposed
+
+This is a trust-boundary and auditability signal, not a claim of production readiness.
+
 ## Overview
 
 This proxy bridges the gap between:

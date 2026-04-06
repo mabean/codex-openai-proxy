@@ -130,30 +130,31 @@ struct Usage {
 struct ResponsesApiRequest {
     model: String,
     instructions: String,
-    input: Vec<ResponseItem>,
+    input: Vec<ResponsesInputItem>,
     tools: Vec<Value>,
     tool_choice: String,
     parallel_tool_calls: bool,
     reasoning: Option<Value>,
     store: bool,
     stream: bool,
+    text: Value,
     include: Vec<String>,
+    prompt_cache_key: String,
 }
 
 #[derive(Serialize, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ResponseItem {
-    Message {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<String>,
+#[serde(untagged)]
+enum ResponsesInputItem {
+    UserMessage {
         role: String,
-        content: Vec<ContentItem>,
+        content: Vec<InputContentItem>,
     },
 }
 
 #[derive(Serialize, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ContentItem {
+#[serde(tag = "type")]
+enum InputContentItem {
+    #[serde(rename = "input_text")]
     InputText { text: String },
 }
 
@@ -432,6 +433,7 @@ impl ProxyServer {
         validate_chat_request(&chat_req)?;
 
         let mut input = Vec::new();
+        let mut system_parts = Vec::new();
 
         for msg in chat_req.messages {
             let content_text = flatten_message_content(&msg.content).map_err(|message| {
@@ -441,26 +443,52 @@ impl ProxyServer {
                 }
             })?;
 
-            input.push(ResponseItem::Message {
-                id: None,
-                role: msg.role,
-                content: vec![ContentItem::InputText { text: content_text }],
+            match msg.role.as_str() {
+                "system" => system_parts.push(content_text),
+                "user" => input.push(ResponsesInputItem::UserMessage {
+                    role: "user".to_string(),
+                    content: vec![InputContentItem::InputText { text: content_text }],
+                }),
+                "assistant" => {
+                    // Keep baseline ingress simple and valid for upstream.
+                    // Assistant history can be added later using the fuller OpenAI Responses shape.
+                }
+                _ => {
+                    input.push(ResponsesInputItem::UserMessage {
+                        role: "user".to_string(),
+                        content: vec![InputContentItem::InputText { text: content_text }],
+                    });
+                }
+            }
+        }
+
+        if input.is_empty() {
+            return Err(ProxyError::Validation {
+                message: "at least one user message is required for the current hardened path"
+                    .to_string(),
+                field: Some("messages".to_string()),
             });
         }
 
-        let instructions = "You are a helpful AI assistant. Provide clear, accurate, and concise responses to user questions and requests.".to_string();
+        let instructions = if system_parts.is_empty() {
+            "You are a helpful AI assistant. Provide clear, accurate, and concise responses to user questions and requests.".to_string()
+        } else {
+            system_parts.join("\n\n")
+        };
 
         Ok(ResponsesApiRequest {
-            model: chat_req.model,
+            model: normalize_codex_model_id(&chat_req.model),
             instructions,
             input,
             tools: chat_req.tools.unwrap_or_default(),
             tool_choice: "auto".to_string(),
-            parallel_tool_calls: false,
+            parallel_tool_calls: true,
             reasoning: None,
             store: false,
             stream: true,
-            include: vec![],
+            text: json!({ "verbosity": "medium" }),
+            include: vec!["reasoning.encrypted_content".to_string()],
+            prompt_cache_key: Uuid::new_v4().to_string(),
         })
     }
 
@@ -480,7 +508,7 @@ impl ProxyServer {
             .header("Accept", "text/event-stream")
             .header("OpenAI-Beta", "responses=experimental")
             .header("originator", "pi")
-            .header("User-Agent", "codex-openai-proxy/0.1 local-hardening");
+            .header("User-Agent", "pi (codex-openai-proxy)");
 
         if let Some(access_token) = &self.auth_data.access_token {
             request_builder =
@@ -500,13 +528,13 @@ impl ProxyServer {
         let session_id = Uuid::new_v4();
         request_builder = request_builder.header("session_id", session_id.to_string());
 
-        let response =
-            request_builder
-                .send()
-                .await
-                .map_err(|e| ProxyError::UpstreamUnavailable {
-                    message: format!("failed to send request to upstream: {}", e),
-                })?;
+        let response = request_builder
+            .json(&responses_req)
+            .send()
+            .await
+            .map_err(|e| ProxyError::UpstreamUnavailable {
+                message: format!("failed to send request to upstream: {}", e),
+            })?;
 
         let status = response.status();
         let body = response
@@ -548,6 +576,10 @@ impl ProxyServer {
             }),
         })
     }
+}
+
+fn normalize_codex_model_id(model: &str) -> String {
+    model.rsplit('/').next().unwrap_or(model).to_string()
 }
 
 fn validate_chat_request(req: &ChatCompletionsRequest) -> Result<(), ProxyError> {
@@ -939,16 +971,10 @@ async fn universal_request_handler(
             "object": "list",
             "data": [
                 {
-                    "id": "gpt-4",
+                    "id": "gpt-5.4",
                     "object": "model",
                     "created": 1687882411,
-                    "owned_by": "openai"
-                },
-                {
-                    "id": "gpt-5",
-                    "object": "model",
-                    "created": 1687882411,
-                    "owned_by": "openai"
+                    "owned_by": "openai-codex"
                 }
             ]
         }))
@@ -995,7 +1021,8 @@ async fn universal_request_handler(
 
             match proxy.proxy_request(chat_req).await {
                 Ok(response) => {
-                    let anthropic_res = convert_chat_to_anthropic(&model, response);
+                    let anthropic_res =
+                        convert_chat_to_anthropic(&normalize_codex_model_id(&model), response);
                     warp::reply::json(&anthropic_res).into_response()
                 }
                 Err(err) => {
