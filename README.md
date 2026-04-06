@@ -42,6 +42,7 @@ Important:
 
 Current:
 - OpenAI-compatible `/v1/chat/completions` ingress
+- Anthropic-compatible `/v1/messages` ingress (non-streaming baseline)
 - Local auth file loading
 - Message/content conversion baseline
 - Direct Codex backend request path in active development
@@ -207,6 +208,16 @@ See:
 - `config_ready` / `auth_material_present` are not the same thing as proven upstream auth validity.
 - Prefer local testing until the hardening plan is complete.
 
+## API surfaces
+
+### OpenAI-compatible
+- `POST /v1/chat/completions`
+- `GET /v1/models`
+- `GET /health`
+
+### Anthropic-compatible
+- `POST /v1/messages` (non-streaming baseline)
+
 ## Troubleshooting
 
 ### Common Issues
@@ -245,7 +256,7 @@ curl -v -X POST http://localhost:8080/v1/chat/completions \
 
 - This fork is still under hardening and protocol verification.
 - OAuth/Codex backend behavior is still being validated against the real upstream contract.
-- Anthropic-compatible ingress is planned, but not implemented yet.
+- Anthropic-compatible ingress currently supports only a basic non-streaming `/v1/messages` path.
 - Public deployment guidance is intentionally omitted for now.
 
 ## Development

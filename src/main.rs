@@ -32,6 +32,47 @@ struct ChatCompletionsRequest {
     tools: Option<Vec<Value>>,
 }
 
+#[derive(Deserialize, Debug, Clone)]
+struct AnthropicMessagesRequest {
+    model: String,
+    messages: Vec<AnthropicMessage>,
+    system: Option<Value>,
+    max_tokens: Option<u32>,
+    stream: Option<bool>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct AnthropicMessage {
+    role: String,
+    content: Value,
+}
+
+#[derive(Serialize, Debug)]
+struct AnthropicMessagesResponse {
+    id: String,
+    #[serde(rename = "type")]
+    response_type: String,
+    role: String,
+    content: Vec<AnthropicTextBlock>,
+    model: String,
+    stop_reason: Option<String>,
+    stop_sequence: Option<String>,
+    usage: AnthropicUsage,
+}
+
+#[derive(Serialize, Debug)]
+struct AnthropicTextBlock {
+    #[serde(rename = "type")]
+    content_type: String,
+    text: String,
+}
+
+#[derive(Serialize, Debug)]
+struct AnthropicUsage {
+    input_tokens: u32,
+    output_tokens: u32,
+}
+
 #[derive(Deserialize, Debug)]
 struct ChatMessage {
     role: String,
@@ -208,6 +249,34 @@ impl ProxyServer {
         }
 
         anyhow::bail!("unsupported auth file format")
+    }
+
+    fn convert_anthropic_to_chat(
+        &self,
+        anthropic_req: AnthropicMessagesRequest,
+    ) -> ChatCompletionsRequest {
+        let mut messages = Vec::new();
+
+        if let Some(system) = anthropic_req.system {
+            messages.push(ChatMessage {
+                role: "system".to_string(),
+                content: system,
+            });
+        }
+
+        for msg in anthropic_req.messages {
+            messages.push(ChatMessage {
+                role: msg.role,
+                content: msg.content,
+            });
+        }
+
+        ChatCompletionsRequest {
+            model: anthropic_req.model,
+            messages,
+            stream: anthropic_req.stream,
+            tools: None,
+        }
     }
 
     fn convert_chat_to_responses(&self, chat_req: ChatCompletionsRequest) -> ResponsesApiRequest {
@@ -426,7 +495,7 @@ async fn main() -> Result<()> {
 
     println!("Initializing Codex OpenAI Proxy...");
 
-    let proxy = ProxyServer::new(&args.auth_path).await?;
+    let proxy = ProxyServer::new(&args.auth_path, &args.upstream_base_url).await?;
     println!("✓ Loaded authentication from {}", args.auth_path);
     println!(
         "✓ Auth mode: {}",
