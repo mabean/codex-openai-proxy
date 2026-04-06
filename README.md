@@ -6,13 +6,14 @@
 >
 > **Current reality:** this fork is under active audit/hardening and should not yet be treated as a production-grade token-handling proxy.
 
-A proxy server that allows OpenAI-compatible clients to use ChatGPT/Codex authentication instead of requiring separate OpenAI API keys.
+A proxy server that allows OpenAI-compatible and Anthropic-compatible clients to use ChatGPT/Codex authentication instead of requiring separate provider API keys.
 
 ## Overview
 
 This proxy bridges the gap between:
-- **Input**: Standard OpenAI Chat Completions API format (what CLINE expects)
-- **Output**: ChatGPT Responses API format (what ChatGPT backend uses)
+- **Input**: OpenAI Chat Completions or Anthropic Messages API format
+- **Core transport**: ChatGPT/Codex-backed upstream request path
+- **Output**: OpenAI-compatible or Anthropic-compatible response envelopes
 
 ## Trust signals / security notes
 
@@ -43,6 +44,7 @@ Important:
 Current:
 - OpenAI-compatible `/v1/chat/completions` ingress
 - Anthropic-compatible `/v1/messages` ingress (non-streaming baseline)
+- Structured validation and error envelopes for both API families
 - Local auth file loading
 - Message/content conversion baseline
 - Direct Codex backend request path in active development
@@ -62,6 +64,15 @@ git clone https://github.com/mabean/codex-openai-proxy.git
 cd codex-openai-proxy
 cargo build --release
 ./target/release/codex-openai-proxy --port 8080 --auth-path ~/.codex/auth.json
+```
+
+Optional:
+
+```bash
+./target/release/codex-openai-proxy \
+  --port 8080 \
+  --auth-path ~/.codex/auth.json \
+  --upstream-base-url https://chatgpt.com/backend-api
 ```
 
 ### 2. Local-only default
@@ -90,6 +101,16 @@ curl -X POST http://127.0.0.1:8080/v1/chat/completions \
     "model": "gpt-5",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
+
+# Test completion (Anthropic-compatible ingress)
+curl -X POST http://127.0.0.1:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 128,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
 ```
 
 ### 4. Client integration
@@ -101,41 +122,17 @@ Do not expose the service publicly during the hardening phase.
 
 ### Request Flow
 
-1. **CLINE** → Chat Completions format → **Proxy**
-2. **Proxy** → Converts to Responses API → **ChatGPT Backend**
-3. **ChatGPT Backend** → Responses API format → **Proxy**
-4. **Proxy** → Converts to Chat Completions → **CLINE**
+OpenAI-compatible path:
+1. **Client** → Chat Completions format → **Proxy**
+2. **Proxy** → Converts to internal Responses-style upstream request → **ChatGPT/Codex backend**
+3. **Backend** → SSE/text result → **Proxy**
+4. **Proxy** → Converts to Chat Completions response → **Client**
 
-### Format Conversion
-
-**Chat Completions Request:**
-```json
-{
-  "model": "gpt-5",
-  "messages": [
-    {"role": "user", "content": "Hello!"}
-  ]
-}
-```
-
-**Responses API Request:**
-```json
-{
-  "model": "gpt-5", 
-  "instructions": "You are a helpful AI assistant.",
-  "input": [
-    {
-      "type": "message",
-      "role": "user", 
-      "content": [{"type": "input_text", "text": "Hello!"}]
-    }
-  ],
-  "tools": [],
-  "tool_choice": "auto",
-  "store": false,
-  "stream": false
-}
-```
+Anthropic-compatible path:
+1. **Client** → Messages format → **Proxy**
+2. **Proxy** → Converts to internal chat shape → upstream request
+3. **Backend** → SSE/text result → **Proxy**
+4. **Proxy** → Converts to Anthropic message response → **Client**
 
 ## Configuration
 
@@ -145,10 +142,11 @@ Do not expose the service publicly during the hardening phase.
 codex-openai-proxy [OPTIONS]
 
 Options:
-  -p, --port <PORT>          Port to listen on [default: 8080]
-      --auth-path <PATH>     Path to Codex auth.json [default: ~/.codex/auth.json]
-  -h, --help                 Print help
-  -v, --version              Print version
+  -p, --port <PORT>                    Port to listen on [default: 8080]
+      --auth-path <PATH>               Path to Codex auth.json [default: ~/.codex/auth.json]
+      --upstream-base-url <URL>        Upstream ChatGPT/Codex base URL [default: https://chatgpt.com/backend-api]
+  -h, --help                           Print help
+  -v, --version                        Print version
 ```
 
 ### Authentication
@@ -161,17 +159,9 @@ Security guidance:
 - do not expose the proxy publicly while it can use those credentials
 - do not enable verbose logging without checking redaction behavior first
 
-The proxy automatically reads authentication from your Codex `auth.json` file:
-
-```json
-{
-  "access_token": "eyJ...",
-  "account_id": "db1fc050-5df3-42c1-be65-9463d9d23f0b",
-  "api_key": "sk-proj-..."
-}
-```
-
-**Priority**: Uses `access_token` + `account_id` for ChatGPT Plus accounts, falls back to `api_key` for standard OpenAI accounts.
+The proxy supports:
+- legacy auth files with token fields
+- OpenClaw-style auth profile files with `lastGood.openai-codex`
 
 ## API Endpoints
 
@@ -179,10 +169,25 @@ The proxy automatically reads authentication from your Codex `auth.json` file:
 - **GET** `/health`
 - Returns service status
 
-### Chat Completions
+### OpenAI-compatible
 - **POST** `/v1/chat/completions`
-- OpenAI-compatible chat completions endpoint
-- Supports: messages, model, temperature, max_tokens, stream, tools
+- **GET** `/v1/models`
+
+### Anthropic-compatible
+- **POST** `/v1/messages`
+- Current support: non-streaming, text-oriented baseline
+
+## Error behavior
+
+The proxy now distinguishes:
+- request validation errors
+- unsupported features (for example streaming on hardened path)
+- auth/config errors
+- upstream authorization failures
+- upstream availability/protocol failures
+
+OpenAI-compatible errors are returned in an OpenAI-style `error` envelope.
+Anthropic-compatible errors are returned in an Anthropic-style `{"type":"error","error":...}` envelope.
 
 ## Security roadmap
 
@@ -208,55 +213,12 @@ See:
 - `config_ready` / `auth_material_present` are not the same thing as proven upstream auth validity.
 - Prefer local testing until the hardening plan is complete.
 
-## API surfaces
-
-### OpenAI-compatible
-- `POST /v1/chat/completions`
-- `GET /v1/models`
-- `GET /health`
-
-### Anthropic-compatible
-- `POST /v1/messages` (non-streaming baseline)
-
-## Troubleshooting
-
-### Common Issues
-
-**Connection Refused:**
-```bash
-# Check if proxy is running
-curl http://localhost:8080/health
-```
-
-**Authentication Errors:**
-```bash
-# Verify auth.json exists and has valid tokens
-cat ~/.codex/auth.json | jq .
-```
-
-**Backend Errors:**
-```bash
-# Check proxy logs for detailed error messages
-RUST_LOG=debug cargo run
-```
-
-### Debug Mode
-
-```bash
-# Run with debug logging
-RUST_LOG=debug cargo run -- --port 8080
-
-# Test with verbose curl
-curl -v -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gpt-5", "messages": [{"role": "user", "content": "Test"}]}'
-```
-
 ## Known limitations
 
 - This fork is still under hardening and protocol verification.
 - OAuth/Codex backend behavior is still being validated against the real upstream contract.
 - Anthropic-compatible ingress currently supports only a basic non-streaming `/v1/messages` path.
+- Usage/token accounting is currently placeholder-level on the compatibility surface.
 - Public deployment guidance is intentionally omitted for now.
 
 ## Development
