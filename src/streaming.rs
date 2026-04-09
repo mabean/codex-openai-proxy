@@ -114,7 +114,13 @@ pub fn parse_codex_sse_to_events(
                             if status == "completed" || event_type == "response.output_item.done" {
                                 let final_arguments = tool_state
                                     .get(&call_id)
-                                    .map(|(_, args)| if args.is_empty() { arguments.clone() } else { args.clone() })
+                                    .map(|(_, args)| {
+                                        if args.is_empty() {
+                                            arguments.clone()
+                                        } else {
+                                            args.clone()
+                                        }
+                                    })
                                     .unwrap_or_else(|| arguments.clone());
                                 events.push(CanonicalStreamEvent::ToolCallDone {
                                     call_id,
@@ -380,7 +386,9 @@ pub fn render_openai_sse(events: &[CanonicalStreamEvent], model: &str) -> String
                             content: None,
                             tool_calls: None,
                         },
-                        finish_reason: Some(finish_reason.clone().unwrap_or_else(|| "stop".to_string())),
+                        finish_reason: Some(
+                            finish_reason.clone().unwrap_or_else(|| "stop".to_string()),
+                        ),
                     }],
                 };
                 out.push_str("data: ");
@@ -395,7 +403,10 @@ pub fn render_openai_sse(events: &[CanonicalStreamEvent], model: &str) -> String
 }
 
 fn verbose_tracing_enabled() -> bool {
-    matches!(std::env::var("CODEX_PROXY_VERBOSE").as_deref(), Ok("1") | Ok("true") | Ok("TRUE"))
+    matches!(
+        std::env::var("CODEX_PROXY_VERBOSE").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
 }
 
 pub fn render_anthropic_sse(events: &[CanonicalStreamEvent], model: &str) -> String {
@@ -410,7 +421,9 @@ pub fn render_anthropic_sse(events: &[CanonicalStreamEvent], model: &str) -> Str
             CanonicalStreamEvent::ToolCallStart { .. } => tool_call_starts += 1,
             CanonicalStreamEvent::ToolCallDelta { .. } => tool_call_deltas += 1,
             CanonicalStreamEvent::ToolCallDone { .. } => tool_call_dones += 1,
-            CanonicalStreamEvent::Completed { finish_reason } => completed_finish_reason = finish_reason.clone(),
+            CanonicalStreamEvent::Completed { finish_reason } => {
+                completed_finish_reason = finish_reason.clone()
+            }
             _ => {}
         }
     }
@@ -429,8 +442,10 @@ pub fn render_anthropic_sse(events: &[CanonicalStreamEvent], model: &str) -> Str
     let mut out = String::new();
     let mut final_stop_reason = "end_turn";
     let mut message_stop_seen = false;
-    out.push_str("event: message_start
-");
+    out.push_str(
+        "event: message_start
+",
+    );
     out.push_str("data: ");
     out.push_str(&json_string(&serde_json::json!({
         "type":"message_start",
@@ -445,14 +460,17 @@ pub fn render_anthropic_sse(events: &[CanonicalStreamEvent], model: &str) -> Str
             "usage":{"input_tokens":0,"output_tokens":0}
         }
     })));
-    out.push_str("
+    out.push_str(
+        "
 
-");
+",
+    );
 
     let mut current_block_index: Option<u32> = None;
     let mut next_block_index = 0u32;
     let mut saw_tool_use = false;
-    let mut tool_block_indices: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut tool_block_indices: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
 
     for event in events {
         match event {
@@ -461,91 +479,115 @@ pub fn render_anthropic_sse(events: &[CanonicalStreamEvent], model: &str) -> Str
                     let block_index = next_block_index;
                     next_block_index += 1;
                     current_block_index = Some(block_index);
-                    out.push_str("event: content_block_start
-");
+                    out.push_str(
+                        "event: content_block_start
+",
+                    );
                     out.push_str("data: ");
                     out.push_str(&json_string(&serde_json::json!({
                         "type":"content_block_start",
                         "index":block_index,
                         "content_block":{"type":"text","text":""}
                     })));
-                    out.push_str("
+                    out.push_str(
+                        "
 
-");
+",
+                    );
                 }
                 let block_index = current_block_index.unwrap();
-                out.push_str("event: content_block_delta
-");
+                out.push_str(
+                    "event: content_block_delta
+",
+                );
                 out.push_str("data: ");
                 out.push_str(&json_string(&serde_json::json!({
                     "type":"content_block_delta",
                     "index":block_index,
                     "delta":{"type":"text_delta","text":text}
                 })));
-                out.push_str("
+                out.push_str(
+                    "
 
-");
+",
+                );
             }
             CanonicalStreamEvent::ToolCallStart { call_id, name } => {
                 saw_tool_use = true;
                 if let Some(open_index) = current_block_index.take() {
-                    out.push_str("event: content_block_stop
-");
+                    out.push_str(
+                        "event: content_block_stop
+",
+                    );
                     out.push_str("data: ");
                     out.push_str(&json_string(&serde_json::json!({
                         "type":"content_block_stop",
                         "index":open_index
                     })));
-                    out.push_str("
+                    out.push_str(
+                        "
 
-");
+",
+                    );
                 }
                 let block_index = next_block_index;
                 next_block_index += 1;
                 tool_block_indices.insert(call_id.clone(), block_index);
                 current_block_index = Some(block_index);
-                out.push_str("event: content_block_start
-");
+                out.push_str(
+                    "event: content_block_start
+",
+                );
                 out.push_str("data: ");
                 out.push_str(&json_string(&serde_json::json!({
                     "type":"content_block_start",
                     "index":block_index,
                     "content_block":{"type":"tool_use","id":call_id,"name":name,"input":{}}
                 })));
-                out.push_str("
+                out.push_str(
+                    "
 
-");
+",
+                );
             }
             CanonicalStreamEvent::ToolCallDelta {
                 call_id,
                 arguments_delta,
             } => {
                 if let Some(block_index) = tool_block_indices.get(call_id) {
-                    out.push_str("event: content_block_delta
-");
+                    out.push_str(
+                        "event: content_block_delta
+",
+                    );
                     out.push_str("data: ");
                     out.push_str(&json_string(&serde_json::json!({
                         "type":"content_block_delta",
                         "index":block_index,
                         "delta":{"type":"input_json_delta","partial_json":arguments_delta}
                     })));
-                    out.push_str("
+                    out.push_str(
+                        "
 
-");
+",
+                    );
                 }
             }
             CanonicalStreamEvent::ToolCallDone { call_id, .. } => {
                 if let Some(block_index) = tool_block_indices.get(call_id) {
-                    out.push_str("event: content_block_stop
-");
+                    out.push_str(
+                        "event: content_block_stop
+",
+                    );
                     out.push_str("data: ");
                     out.push_str(&json_string(&serde_json::json!({
                         "type":"content_block_stop",
                         "index":block_index
                     })));
-                    out.push_str("
+                    out.push_str(
+                        "
 
-");
+",
+                    );
                     if current_block_index == Some(*block_index) {
                         current_block_index = None;
                     }
@@ -553,16 +595,20 @@ pub fn render_anthropic_sse(events: &[CanonicalStreamEvent], model: &str) -> Str
             }
             CanonicalStreamEvent::Completed { finish_reason } => {
                 if let Some(open_index) = current_block_index.take() {
-                    out.push_str("event: content_block_stop
-");
+                    out.push_str(
+                        "event: content_block_stop
+",
+                    );
                     out.push_str("data: ");
                     out.push_str(&json_string(&serde_json::json!({
                         "type":"content_block_stop",
                         "index":open_index
                     })));
-                    out.push_str("
+                    out.push_str(
+                        "
 
-");
+",
+                    );
                 }
                 let stop_reason = match finish_reason.as_deref() {
                     Some("tool_use") => "tool_use",
@@ -577,8 +623,10 @@ pub fn render_anthropic_sse(events: &[CanonicalStreamEvent], model: &str) -> Str
                     }
                 };
                 final_stop_reason = stop_reason;
-                out.push_str("event: message_delta
-");
+                out.push_str(
+                    "event: message_delta
+",
+                );
                 out.push_str("data: ");
                 out.push_str(&json_string(&serde_json::json!({
                     "type":"message_delta",

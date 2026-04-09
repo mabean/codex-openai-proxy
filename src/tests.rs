@@ -386,7 +386,9 @@ fn render_anthropic_sse_includes_tool_use_blocks() {
             name: "Edit".to_string(),
             arguments: "{\"path\":\"a\"}".to_string(),
         },
-        crate::streaming::CanonicalStreamEvent::Completed { finish_reason: Some("tool_use".to_string()) },
+        crate::streaming::CanonicalStreamEvent::Completed {
+            finish_reason: Some("tool_use".to_string()),
+        },
     ];
     let out = crate::streaming::render_anthropic_sse(&events, "gpt-5.4");
     assert!(out.contains("tool_use"));
@@ -447,7 +449,9 @@ fn render_anthropic_sse_sets_tool_use_stop_reason_when_tool_calls_exist() {
             name: "Edit".to_string(),
             arguments: "{}".to_string(),
         },
-        crate::streaming::CanonicalStreamEvent::Completed { finish_reason: Some("tool_use".to_string()) },
+        crate::streaming::CanonicalStreamEvent::Completed {
+            finish_reason: Some("tool_use".to_string()),
+        },
     ];
     let out = crate::streaming::render_anthropic_sse(&events, "gpt-5.4");
     assert!(out.contains("\"stop_reason\":\"tool_use\""));
@@ -537,11 +541,26 @@ fn anthropic_edit_prompt_stream_must_use_tool_use_contract() {
     for (name, sse) in fixtures {
         let events = crate::streaming::parse_codex_sse_to_events(sse).unwrap();
         let out = crate::streaming::render_anthropic_sse(&events, "gpt-5.4");
-        assert!(out.contains("tool_use"), "fixture {name} must render Anthropic tool_use block");
-        assert!(out.contains("\"stop_reason\":\"tool_use\""), "fixture {name} must stop with tool_use");
-        assert!(out.contains("event: message_stop\n"), "fixture {name} must include message_stop");
-        assert!(out.contains("event: content_block_start\n"), "fixture {name} must include content_block_start");
-        assert!(out.contains("event: content_block_stop\n"), "fixture {name} must include content_block_stop");
+        assert!(
+            out.contains("tool_use"),
+            "fixture {name} must render Anthropic tool_use block"
+        );
+        assert!(
+            out.contains("\"stop_reason\":\"tool_use\""),
+            "fixture {name} must stop with tool_use"
+        );
+        assert!(
+            out.contains("event: message_stop\n"),
+            "fixture {name} must include message_stop"
+        );
+        assert!(
+            out.contains("event: content_block_start\n"),
+            "fixture {name} must include content_block_start"
+        );
+        assert!(
+            out.contains("event: content_block_stop\n"),
+            "fixture {name} must include content_block_stop"
+        );
     }
 }
 
@@ -602,7 +621,10 @@ fn normalize_tools_for_codex_sets_strict_and_additional_properties_false() {
     let normalized = crate::normalize_tools_for_codex(tools);
     let tool = &normalized[0];
     assert_eq!(tool["strict"].as_bool(), Some(false));
-    assert_eq!(tool["parameters"]["required"], serde_json::json!(["file_path", "old_string", "new_string"]));
+    assert_eq!(
+        tool["parameters"]["required"],
+        serde_json::json!(["file_path", "old_string", "new_string"])
+    );
     assert_eq!(tool["name"].as_str(), Some("Edit"));
 }
 
@@ -625,5 +647,7 @@ fn normalize_tool_parameters_schema_preserves_optional_parameters() {
     let normalized = crate::normalize_tool_parameters_schema(schema.clone());
     assert_eq!(normalized, schema);
     assert_eq!(normalized["required"], serde_json::json!(["command"]));
-    assert!(normalized["properties"]["isolation"].get("required").is_none());
+    assert!(normalized["properties"]["isolation"]
+        .get("required")
+        .is_none());
 }

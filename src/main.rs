@@ -5,10 +5,15 @@ use clap::Parser;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use streaming::{parse_codex_sse_to_events, render_anthropic_sse, render_openai_sse, CanonicalStreamEvent};
+use streaming::{
+    parse_codex_sse_to_events, render_anthropic_sse, render_openai_sse, CanonicalStreamEvent,
+};
 
 fn verbose_tracing_enabled() -> bool {
-    matches!(std::env::var("CODEX_PROXY_VERBOSE").as_deref(), Ok("1") | Ok("true") | Ok("TRUE"))
+    matches!(
+        std::env::var("CODEX_PROXY_VERBOSE").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
 }
 
 fn normalize_codex_instructions(raw: &str) -> String {
@@ -22,7 +27,10 @@ fn normalize_codex_instructions(raw: &str) -> String {
             in_tools_or_reminders = false;
             continue;
         }
-        if trimmed.starts_with("# Tools") || trimmed.starts_with("# Tool") || trimmed.starts_with("# Reminders") {
+        if trimmed.starts_with("# Tools")
+            || trimmed.starts_with("# Tool")
+            || trimmed.starts_with("# Reminders")
+        {
             in_tools_or_reminders = true;
             continue;
         }
@@ -46,14 +54,18 @@ fn normalize_codex_instructions(raw: &str) -> String {
         }
         core.push(trimmed.to_string());
     }
-    let normalized = core.join("
-");
+    let normalized = core.join(
+        "
+",
+    );
     let normalized = normalized
         .lines()
         .map(str::trim_end)
         .collect::<Vec<_>>()
-        .join("
-");
+        .join(
+            "
+",
+        );
     let normalized = normalized.trim().to_string();
     if normalized.is_empty() {
         "You are a helpful AI assistant. Provide clear, accurate, and concise responses to user questions and requests.".to_string()
@@ -577,8 +589,14 @@ impl ProxyServer {
         let instructions = normalize_codex_instructions(&raw_instructions);
         if verbose_tracing_enabled() {
             eprintln!("[codex-instructions-raw-bytes] {}", raw_instructions.len());
-            eprintln!("[codex-instructions-normalized-bytes] {}", instructions.len());
-            eprintln!("[codex-instructions-normalized-prefix] {}", instructions.chars().take(1200).collect::<String>());
+            eprintln!(
+                "[codex-instructions-normalized-bytes] {}",
+                instructions.len()
+            );
+            eprintln!(
+                "[codex-instructions-normalized-prefix] {}",
+                instructions.chars().take(1200).collect::<String>()
+            );
         }
         let normalized_tools = normalize_tools_for_codex(chat_req.tools.unwrap_or_default());
         let tool_debug_summary: Vec<Value> = normalized_tools
@@ -612,7 +630,10 @@ impl ProxyServer {
             input.len(),
             instructions.len()
         );
-        eprintln!("[responses-request-tools] {}", serde_json::to_string(&tool_debug_summary).unwrap_or_else(|_| "[]".to_string()));
+        eprintln!(
+            "[responses-request-tools] {}",
+            serde_json::to_string(&tool_debug_summary).unwrap_or_else(|_| "[]".to_string())
+        );
         Ok(ResponsesApiRequest {
             model: normalize_codex_model_id(&chat_req.model),
             instructions,
@@ -662,9 +683,13 @@ impl ProxyServer {
         }
         let session_id = Uuid::new_v4();
         request_builder = request_builder.header("session_id", session_id.to_string());
-        let upstream_request_json = serde_json::to_string(&responses_req).unwrap_or_else(|_| "<serialize-failed>".to_string());
+        let upstream_request_json = serde_json::to_string(&responses_req)
+            .unwrap_or_else(|_| "<serialize-failed>".to_string());
         let upstream_request_prefix: String = upstream_request_json.chars().take(1500).collect();
-        eprintln!("[upstream-request-body-bytes] {}", upstream_request_json.len());
+        eprintln!(
+            "[upstream-request-body-bytes] {}",
+            upstream_request_json.len()
+        );
         eprintln!("[upstream-request-body-prefix] {}", upstream_request_prefix);
         let response = request_builder
             .json(&responses_req)
@@ -675,16 +700,13 @@ impl ProxyServer {
             })?;
         let status = response.status();
         let headers = format!("{:?}", response.headers());
-        let body = response
-            .text()
-            .await
-            .map_err(|e| {
-                eprintln!("[upstream-read-error] {}", e);
-                eprintln!("[request-outcome] upstream_read_failed");
-                ProxyError::UpstreamProtocol {
-                    message: format!("failed to read upstream response body: {}", e),
-                }
-            })?;
+        let body = response.text().await.map_err(|e| {
+            eprintln!("[upstream-read-error] {}", e);
+            eprintln!("[request-outcome] upstream_read_failed");
+            ProxyError::UpstreamProtocol {
+                message: format!("failed to read upstream response body: {}", e),
+            }
+        })?;
         let body_prefix: String = body.chars().take(1200).collect();
         eprintln!("[upstream-response-status] {}", status);
         eprintln!("[upstream-response-headers] {}", headers);
@@ -714,9 +736,12 @@ impl ProxyServer {
         api_family: ApiFamily,
     ) -> Result<(String, String), ProxyError> {
         let (model, sse_text) = self.upstream_sse_text(chat_req).await?;
-        eprintln!("[raw-codex-sse-begin]
+        eprintln!(
+            "[raw-codex-sse-begin]
 {}
-[raw-codex-sse-end]", sse_text);
+[raw-codex-sse-end]",
+            sse_text
+        );
         let events = parse_codex_sse_to_events(&sse_text).map_err(|e| {
             eprintln!("[codex-parse-error] {}", e.message());
             eprintln!("[request-outcome] codex_parse_failed");
@@ -760,7 +785,10 @@ impl ProxyServer {
             ApiFamily::Anthropic => render_anthropic_sse(&events, &model),
         };
         if matches!(api_family, ApiFamily::Anthropic) {
-            eprintln!("[raw-anthropic-sse-begin]\n{}\n[raw-anthropic-sse-end]", rendered);
+            eprintln!(
+                "[raw-anthropic-sse-begin]\n{}\n[raw-anthropic-sse-end]",
+                rendered
+            );
         }
         Ok((model, rendered))
     }
